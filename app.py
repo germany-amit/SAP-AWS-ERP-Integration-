@@ -1,92 +1,82 @@
 import streamlit as st
 import jwt
-import datetime
-import json
-import hashlib
+import hmac, hashlib, json, time
 
-st.set_page_config(page_title="AWS + SAP Integration MVP", layout="wide")
+# ------------------------
+# Helper Functions
+# ------------------------
+def generate_jwt(payload, secret):
+    return jwt.encode(payload, secret, algorithm="HS256")
 
-st.title("🌍 AWS + SAP Integration - 13 Step Demo")
-st.write("This is a minimal running demo that simulates how **SAP ↔ AWS integration** works securely.")
-
-# --------------------------------------------
-# Session state initialization
-# --------------------------------------------
-if "signed_message" not in st.session_state:
-    st.session_state["signed_message"] = None
-
-
-# --------------------------------------------
-# Step 1-4: Choose Integration Setup
-# --------------------------------------------
-st.header("🔑 Step 1-4: Setup Integration")
-
-secret_key = st.text_input("Shared Secret (for JWT & signature)", value="my_shared_secret")
-exchange_mode = st.radio(
-    "Choose Exchange Mechanism",
-    ["REST Push", "SFTP", "EventBridge"],
-    index=0
-)
-
-
-# --------------------------------------------
-# Step 5-8: Create Payload in SAP
-# --------------------------------------------
-st.header("📦 Step 5-8: Prepare Payload (SAP Side)")
-
-payload = st.text_area("Enter SAP Payload (JSON)", value='{"order_id": 123, "amount": 5000, "currency": "USD"}')
-
-if st.button("Sign & Send (SAP → AWS)"):
+def verify_jwt(token, secret):
     try:
-        # Create JWT
-        jwt_token = jwt.encode(
-            {"payload": payload, "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=5)},
-            secret_key,
-            algorithm="HS256"
-        )
-        # Create Signature
-        signature = hashlib.sha256((payload + secret_key).encode()).hexdigest()
-
-        # Save in session
-        st.session_state["signed_message"] = {
-            "payload": payload,
-            "jwt": jwt_token,
-            "signature": signature,
-            "mode": exchange_mode
-        }
-
-        st.success("✅ Message signed and sent successfully!")
-        st.json(st.session_state["signed_message"])
-
+        decoded = jwt.decode(token, secret, algorithms=["HS256"])
+        return True, decoded
     except Exception as e:
-        st.error(f"Error creating signed message: {e}")
+        return False, str(e)
 
+def generate_hmac(message, secret):
+    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-# --------------------------------------------
-# Step 9-13: Validate on AWS Side
-# --------------------------------------------
-st.header("🛡️ Step 9-13: Validate Message (AWS Side)")
+def verify_hmac(message, signature, secret):
+    expected_sig = generate_hmac(message, secret)
+    return hmac.compare_digest(expected_sig, signature)
 
-if st.session_state["signed_message"]:
-    sm = st.session_state["signed_message"]
+# ------------------------
+# Streamlit UI
+# ------------------------
+st.set_page_config(page_title="AWS x SAP Integration Demo", layout="centered")
+st.title("AWS ↔ SAP Integration Demo (Simulated)")
 
-    jwt_input = st.text_area("Paste JWT", value=sm["jwt"])
-    signature_input = st.text_input("Paste Signature", value=sm["signature"])
-    payload_input = st.text_area("Paste Payload", value=sm["payload"])
+st.sidebar.header("Demo Scenario")
+scenario = st.sidebar.radio("Choose Scenario", ["AWS + SAP Integration"])
 
-    if st.button("Validate on AWS"):
-        try:
-            # Validate JWT
-            decoded = jwt.decode(jwt_input, secret_key, algorithms=["HS256"])
-            # Validate signature
-            expected_sig = hashlib.sha256((payload_input + secret_key).encode()).hexdigest()
+if scenario == "AWS + SAP Integration":
+    st.subheader("Step 1–7: SAP → AWS Message Creation")
 
-            if signature_input == expected_sig:
-                st.success("✅ Validation successful! Message is authentic and secure.")
-                st.json({"Decoded JWT": decoded, "Exchange Mode": sm["mode"]})
-            else:
-                st.error("❌ Signature mismatch. Message may be tampered.")
-        except Exception as e:
-            st.error(f"JWT validation failed: {e}")
-else:
-    st.info("👉 First, sign & send a message from SAP side above.")
+    # Step 1: Shared secret
+    secret = st.text_input("Shared Secret (JWT & Signatures)", "demo-secret")
+
+    # Step 2: Exchange mechanism
+    exchange = st.selectbox("Exchange Mechanism", ["REST Push", "SFTP", "EventBridge"])
+
+    # Step 3–5: Create Payload
+    payload = {
+        "sap_doc_id": "SAP12345",
+        "timestamp": int(time.time()),
+        "exchange": exchange,
+        "data": {"customer": "ACME Corp", "amount": 5000, "currency": "USD"}
+    }
+
+    # Step 6: Generate JWT
+    token = generate_jwt(payload, secret)
+
+    # Step 7: Generate HMAC signature
+    body_str = json.dumps(payload, indent=2)
+    signature = generate_hmac(body_str, secret)
+
+    st.code(f"JWT: {token}", language="bash")
+    st.code(f"Signature: {signature}", language="bash")
+    st.json(payload)
+
+    st.divider()
+    st.subheader("Step 8–13: AWS Validation")
+
+    # Auto-fill values from SAP simulation
+    jwt_input = st.text_area("Paste JWT", token)
+    sig_input = st.text_area("Paste Signature", signature)
+    body_input = st.text_area("Paste Body (JSON)", body_str)
+
+    if st.button("Validate at AWS Layer"):
+        # Validate JWT
+        ok_jwt, decoded = verify_jwt(jwt_input, secret)
+
+        # Validate HMAC
+        ok_hmac = verify_hmac(body_input, sig_input, secret)
+
+        if ok_jwt and ok_hmac:
+            st.success("✅ Message Verified Successfully")
+            st.json(decoded)
+        else:
+            st.error("❌ Verification Failed")
+            st.write(f"JWT valid: {ok_jwt}, HMAC valid: {ok_hmac}")
